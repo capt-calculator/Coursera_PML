@@ -1,0 +1,128 @@
+---
+title: "PML Course Project"
+author: "Troy Walters"
+date: "May 15, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+setwd("c:/users/zne35671/dropbox/coursera_pml")
+```
+
+For the final project in the Coursera Practical Machine Learning Course, we are given a dataset from an experiment in which accelerometers were used to measure the performance of six participants while performing dumbbell arm curls. Numerous measurements of yaw, pitch, roll, and acceleration were taken from accelerometers on the arm, forearm, dumbell, and belt. In addition the data also contain class labels indicating whether the exercise was performed in the correct manner, labeled 'A', or in one of four incorrect manners, labeled 'B' through 'E'. The objective is to implement a machine learning algorithm that can accurately predict the classes using the feature measurements. 
+
+```{r}
+library(caret)
+library(ggplot2)
+```
+
+####Load the Data
+
+First we load the training and test data, replacing all occurences of '#DIV/0' with NAs. 
+
+```{r}
+
+training <- read.csv('pml-training.csv',
+                     stringsAsFactors = FALSE, na.strings=c("", "#DIV/0!"))
+
+testing <- read.csv('pml-testing.csv',
+                    stringsAsFactors = FALSE, na.strings=c("", "#DIV/0!"))
+```
+
+###Exploratory Analysis
+
+First, let's take a look at the data to get an general idea of what it looks like. I'd like to know what the distribution of the class labels are to see how balanced the outcomes are. Imbalanced classes may lead to problems during modeling. 
+
+```{r}
+dim(training)
+
+table(training$classe)
+
+table(training$classe) / nrow(training)
+```
+
+There are 19,622 samples and 159 predictors. The classes appear to be relatively balanced. More of the measurements are classifed as A (correct form) than the others. But there is not any serious imbalance. 
+
+One problem with the data is that there are a lot of missing values. Many of the columns have a large number of NAs. Since these features with a lot of missing data are going to be relatively unusable in modelling, we are going to just remove them. Here I remove any features that have more than 40% of their values missing. 
+
+```{r, warning=FALSE}
+## Make measurement columns that are strings numeric
+training[, 8:ncol(training)-1] <- lapply(training[, 8:ncol(training)-1], as.numeric)
+
+## Function to get the proportion of non-NA values in a column
+getNas <- function(column) {
+  return(sum(!(is.na(column)))/length(column))
+}
+
+## apply getNas
+naCounts <- sapply(training, getNas)
+
+## Select only columns of training data where NA proportion is less than 0.4
+selection <- names(naCounts[naCounts > 0.6])
+
+trainReduce <- training[, selection]
+testReduce <- testing[, c(selection[1:59],'problem_id')]
+```
+
+Once the features with too much missing data are removed, we are left with 59 features and the class labels.
+
+```{r}
+ncol(trainReduce)
+```
+
+This is still a lot of features, which means that visualization is challenging. In addition, I have very little domain knowledge in this area, which only adds to the difficulty. Rather than try to visualize the data to get an idea of what features to use in modelling, I will use all of the features. I am going to use a random forest model and let the model decide what features are important. 
+
+###Modelling
+
+Here I build the model using all of the gyro and accelerometer data in the reduced traning set, where features with large amounts of missing data are removed. I am also building the tuning grid such that multiple values of mtry are used. In the random forest model, mtry refers to the number of randomly selected features that are used to check for the best possible split at each node of the tree. 
+
+I am also going to use cross-validation to check the accuracy of the model across 5 different folds. This will give use a better idea about what to expect in terms of test set accuracy than using only one training and test set. 
+
+```{r, message=FALSE, cache=TRUE, cache.path='./CourseProject_cache/'}
+
+trainControl <- trainControl(method="cv", number=5)
+
+grid <- data.frame(mtry=seq(1,52, 5))
+
+rfMod <- train(y=trainReduce$classe,
+                x=trainReduce[, 8:59],
+                data=trainReduce,
+                method='rf',
+                trControl=trainControl,
+                tuneGrid=grid
+                )
+
+```
+
+Let's examine the results. First, we take a look at the accuracy of our model in cross-validation.
+
+```{r}
+rfMod$resample
+```
+
+Our model appears to have performed well, obtaining greater than 99% accuracy in each of the 5 cross validations! We should get a similar accuracy score on the test data, assuming that is a representative sample and has a similar structure to the training data. The accuracy will be lower on the test data, but I suspect that it will not be much lower. 
+
+```{r}
+plot(rfMod)
+```
+
+Looking at the results of model tuning, we see that it performed the best in cross-validation when using a value of 6 for mtry, indicating that 6 is the optimal number of features to check for splitting at each node of a tree. 
+
+The variable importance plot (below) for the random forest model indicates that roll_belt is the most important feature. This is followed by yaw_belt and and magnet_dumbbell_z and pitch_belt. 
+
+```{r, fig.height=8}
+varImp <- varImp(rfMod)$importance
+
+ggplot(varImp) + 
+    geom_bar(aes(x=reorder(rownames(varImp), Overall), y=Overall), 
+             stat='identity', fill='steelblue') +
+    coord_flip() +
+    labs(x='Feature', y='Importance', title='Random Forest Feature Importance')
+```
+
+Finally, the model can be used to make predictions on the test data. 
+
+```{r}
+preds <- predict(rfMod, newdata=testReduce)
+```
